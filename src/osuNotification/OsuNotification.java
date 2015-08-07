@@ -14,8 +14,10 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.text.NumberFormat;
 import java.util.Properties;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
+
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
 
 import twitter4j.Twitter;
 import twitter4j.TwitterException;
@@ -29,56 +31,48 @@ public class OsuNotification {
 	private static Connection conn;
 	private static Statement stmt;
 
-	public static void main(String[] args) throws SQLException, IOException, TwitterException {
+	public static void main(String[] args) throws SQLException, IOException, TwitterException, JSONException {
 		InputStream is = OsuNotification.class.getResourceAsStream("properties");
         Properties prop = new Properties();
         prop.load(is);
         is.close();
         
-        String userId, CK, CS, AT, ATS;
+        String apiKey, user, ck, cs, at, ats;
         
-        CK = prop.getProperty("CK");
-        CS = prop.getProperty("CS");
-        AT = prop.getProperty("AT");
-        ATS = prop.getProperty("ATS");
+        apiKey = prop.getProperty("apiKey");
+        ck = prop.getProperty("ck");
+        cs = prop.getProperty("cs");
+        at = prop.getProperty("at");
+        ats = prop.getProperty("ats");
         
         Configuration conf = new ConfigurationBuilder()
-		.setOAuthConsumerKey(CK).setOAuthConsumerSecret(CS).build();
-		AccessToken accessToken = new AccessToken(AT, ATS);
+		.setOAuthConsumerKey(ck).setOAuthConsumerSecret(cs).build();
+		AccessToken accessToken = new AccessToken(at, ats);
 		Twitter twitter = new TwitterFactory(conf).getInstance(accessToken);
 		
-		userId = prop.getProperty("userId");
-		String source = readSource("https://osu.ppy.sh/pages/include/profile-general.php?m=3&u=" + userId);
+		user = prop.getProperty("user");
+		String source = readSource("https://osu.ppy.sh/api/get_user?m=3&k=" + apiKey + "&u=" + user);
+		JSONObject json = new JSONArray(source).getJSONObject(0);
 		
 		prepareSQLite();
 		
-		Matcher reg = Pattern.compile("<b><a href='https:\\/\\/osu.ppy.sh\\/news\\/\\d+'>Performance<\\/a>: (\\d+)pp \\(#([0-9,]+)\\)<\\/b>.+"
-				+ "<img class='flag' title='' src='\\/\\/s.ppy.sh\\/images\\/flags\\/jp.gif'\\/><\\/a>#([0-9,]+)<\\/span><\\/div><br\\/>.+"
-				+ "<b>Hit Accuracy<\\/b>: ([0-9.]+)%<\\/div><br\\/>.+"
-				+ "<b>Play Count<\\/b>: ([0-9]+)<\\/div><br\\/>.+"
-				+ "<b>Current Level<\\/b>: ([0-9]+)<\\/div><br\\/><center><table width=300px height=20px class='levelMetre' border=0 cellpadding=0 cellspacing=0><tr><td class='levelPercent' width='132px' align=right>([0-9]+)%<\\/td>.+"
-				+ "<td width='42'><img height='42' src='\\/\\/s.ppy.sh\\/images\\/X.png'><\\/td><td width='50'>([0-9]+)<\\/td><td width='42'><img height='42' src='\\/\\/s.ppy.sh\\/images\\/S.png'><\\/td><td width='50'>([0-9]+)<\\/td><td width='42'><img height='42' src='\\/\\/s.ppy.sh\\/images\\/A.png'><\\/td><td width='50'>([0-9]+)<\\/td>")
-				.matcher(source);
-		if(!reg.find()){
-			twitter.updateStatus("osuランキング取得失敗");
-			return;
-		}
-		int pp = Integer.parseInt(reg.group(1).replace(",", ""));
-		int rank = Integer.parseInt(reg.group(2).replace(",", ""));
-		int jprank = Integer.parseInt(reg.group(3).replace(",", ""));
-		double acc = Double.parseDouble(reg.group(4));
-		int playcount = Integer.parseInt(reg.group(5).replace(",", ""));
-		double level = Double.parseDouble(reg.group(6) + "." + reg.group(7));
-		int ss = Integer.parseInt(reg.group(8).replace(",", ""));
-		int s = Integer.parseInt(reg.group(9).replace(",", ""));
-		int a = Integer.parseInt(reg.group(10).replace(",", ""));
+		double pp = round_half_up(json.getDouble("pp_raw"));
+		int rank = json.getInt("pp_rank");
+		String country = json.getString("country");
+		int country_rank = json.getInt("pp_country_rank");
+		double acc = round_half_up(json.getDouble("accuracy"));
+		int playcount = json.getInt("playcount");
+		double level = round_half_up(json.getDouble("level"));
+		int ss = json.getInt("count_rank_ss");
+		int s = json.getInt("count_rank_s");
+		int a = json.getInt("count_rank_a");
 		
 		String out;
 		ResultSet resultSet = stmt.executeQuery("select * from osuMania where ROWID = (select max(ROWID) from osuMania)");
 		if(resultSet.next()){
-			int b_pp = resultSet.getInt(1);
+			double b_pp = resultSet.getDouble(1);
 			int b_rank = resultSet.getInt(2);
-			int b_jprank = resultSet.getInt(3);
+			int b_country_rank = resultSet.getInt(3);
 			double b_acc = resultSet.getDouble(4);
 			int b_playcount = resultSet.getInt(5);
 			double b_level = resultSet.getDouble(6);
@@ -86,9 +80,9 @@ public class OsuNotification {
 			int b_s = resultSet.getInt(8);
 			int b_a = resultSet.getInt(9);
 			
-			String diff_pp = addSignum(String.valueOf(pp - b_pp), true);
+			String diff_pp = addSignum(String.valueOf(pp - b_pp), false);
 			String diff_rank = addSignum(String.valueOf(rank - b_rank), true);
-			String diff_jprank = addSignum(String.valueOf(jprank - b_jprank), true);
+			String diff_country_rank = addSignum(String.valueOf(country_rank - b_country_rank), true);
 			String diff_acc = addSignum(String.valueOf(acc - b_acc), false);
 			String diff_playcount = addSignum(String.valueOf(playcount - b_playcount), true);
 			String diff_level = addSignum(String.valueOf(level - b_level), false);
@@ -96,16 +90,16 @@ public class OsuNotification {
 			String diff_s = addSignum(String.valueOf(s - b_s), true);
 			String diff_a = addSignum(String.valueOf(a - b_a), true);
 			
-			out = "osu!mania\nPP:" + numberFormat(pp) + "(" + diff_pp + ")\nRank:" + numberFormat(rank) + "(" + diff_rank + ")\nJP_Rank:" +
-					numberFormat(jprank) + "(" + diff_jprank + ")\nLv:" + level + "(" + diff_level + ")\nAccuracy:" + acc + "%(" +
-					diff_acc + "%)\nPlaycount:" + numberFormat(playcount) + "(" + diff_playcount + ")\nSS:" + numberFormat(ss) + "(" +
+			out = "osu!mania\nPP:" + numberFormatDouble(pp) + "(" + diff_pp + ")\nRank:" + numberFormat(rank) + "(" + diff_rank + ")\n" + country + ":" +
+					numberFormat(country_rank) + "(" + diff_country_rank + ")\nLv:" + level + "(" + diff_level + ")\nAcc:" + acc + "%(" +
+					diff_acc + "%)\nPlay:" + numberFormat(playcount) + "(" + diff_playcount + ")\nSS:" + numberFormat(ss) + "(" +
 					diff_ss + ")\nS:" + numberFormat(s) + "(" + diff_s + ")\nA:" + numberFormat(a) + "(" + diff_a + ")";
 		}else{
-			out = "osu!mania\nPP:" + numberFormat(pp) + "\nRank:" + numberFormat(rank) + "\nJP_Rank:" + numberFormat(jprank) +
-					"\nLv:" + level + "\nAccuracy:" + acc + "%\nPlaycount:" + numberFormat(playcount) + "\nSS:" +
+			out = "osu!mania\nPP:" + numberFormatDouble(pp) + "\nRank:" + numberFormat(rank) + "\n" + country + ":" + numberFormat(country_rank) +
+					"\nLv:" + level + "\nAcc:" + acc + "%\nPlay:" + numberFormat(playcount) + "\nSS:" +
 					numberFormat(ss) + "\nS:" + numberFormat(s) + "\nA:" + numberFormat(a);
 		}
-		stmt.execute("insert into osuMania values(" + pp + "," + rank + "," + jprank + "," + acc + "," +
+		stmt.execute("insert into osuMania values(" + pp + "," + rank + "," + country_rank + "," + acc + "," +
 						playcount + "," + level + "," + ss + "," + s + "," + a + ")");
 		
 		twitter.updateStatus(out);
@@ -123,7 +117,7 @@ public class OsuNotification {
 				DB.createNewFile();
 			conn = DriverManager.getConnection("jdbc:sqlite:" + location);
 			stmt = conn.createStatement();
-			stmt.execute("create table if not exists osuMania(pp, rank, jprank, acc, playcount, level, ss, s, a)");
+			stmt.execute("create table if not exists osuMania(pp, rank, country_rank, acc, playcount, level, ss, s, a)");
 		}catch(Exception e){
 		}
 	}
@@ -158,7 +152,7 @@ public class OsuNotification {
 					return String.valueOf(i);
 			}else{
 				double d = Double.parseDouble(num);
-				d = new BigDecimal(d).setScale(2, BigDecimal.ROUND_HALF_UP).doubleValue();
+				d = round_half_up(d);
 				if(d > 0)
 					return "+" + d;
 				else if(d == 0)
@@ -173,5 +167,11 @@ public class OsuNotification {
 	
 	public static String numberFormat(int i){
 		return NumberFormat.getNumberInstance().format(i);
+	}
+	public static String numberFormatDouble(double d){
+		return NumberFormat.getNumberInstance().format(d);
+	}
+	public static double round_half_up(double d){
+		return new BigDecimal(d).setScale(2, BigDecimal.ROUND_HALF_UP).doubleValue();
 	}
 }
